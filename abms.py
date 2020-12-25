@@ -30,7 +30,6 @@ def generate_lognormal_values(t_mean, size=10000, tau=0.1):
         else:
             break
         i += 1
-    # print(f'调整均值: 执行{i}轮结束！')
 
     j = 0
     while True:
