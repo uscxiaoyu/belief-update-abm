@@ -147,21 +147,21 @@ class AgentDiffusionModel:
             # Agent's belief_innovGood that the innovation is good
             # self.G.nodes[x]["belief_innoGood"] = generate_normal_value(
             #     mu=0.5, sigma=0.2, m=0, n=1)
-            # agent认为创新是好创新的概率
-            self.G.nodes[x]["belief_innoGood"] = np.random.random()
+            # agent认为创新是好创新的先验概率
+            self.G.nodes[x]["belief_innovGood"] = np.random.random()
 
             # The prob of receiving two kinds of WOM in different reality[[p,1-p],[1-p,p]]
             # self.G.nodes[x]["prob_p"] = generate_normal_value(
             #     mu=0.75, sigma=0.2, m=0.5, n=1)
 
-            # 在创新为好或者坏前提下，接收到正面或者负面口碑的基础概率
-            self.G.nodes[x]["prob_p"] = 0.5*np.random.random() + 0.5
+            # 在创新实际上为好或者坏前提下，接收到正面或者负面口碑的基础概率
+            self.G.nodes[x]["prob_p"] = 0.5*np.random.random() + 0.5  #TODO 应该受到前面处理的口碑的状态的影响
             # agent i 的认知能力上限
             self.G.nodes[x]["cognitive_limit"] = np.random.randint(1, 5)
             self.G.nodes[x]["predecessor"] = list(self.G.predecessors(x))
             self.G.nodes[x]["successor"] = list(self.G.successors(x))
             # A dict of whether WOM of the Agent's neighbors is process(1) or ignore(0){neighbor j : 0 or 1}
-            self.G.nodes[x]["nei_WOM_record"] = {i: 0 for i in self.G.nodes[x]["predecessor"]}
+            self.G.nodes[x]["WOM_treate_table"] = {i: 0 for i in self.G.nodes[x]["predecessor"]}
             # agent使用创新后是否为失望
             self.G.nodes[x]['isDisappointed'] = False
 
@@ -201,7 +201,6 @@ class AgentDiffusionModel:
         agent从邻居发送的信息中选择信息。
         疑问：每个周期，即使没有采纳创新的邻居也会发布创新相关信息吗？邻居在每个周期发布一样的信息？
         '''
-        #TODO 为什么需要计算之前信息序列出现的累积概率？该会产生影响？为什么初始化为1？
         jointProb_good = 1  # 如果agent认为这是一个好的创新，判断是否处理m+1条WOM之前，前m条WOM出现的累计概率
         jointProb_bad = 1  # 如果agent认为这是一个坏的创新，判断是否处理m+1条WOM之前，前m条WOM出现的累计概率
         random.shuffle(self.G.nodes[i]['predecessor'])
@@ -209,40 +208,44 @@ class AgentDiffusionModel:
         for j in self.G.nodes[i]['predecessor']:
             if count >= self.G.nodes[i]["cognitive_limit"]:
                 break
-            if self.G.nodes[i]["nei_WOM_record"][j] != 1:  # 已经处理过的PWOM不再重复进行处理
-                jointProb_good, jointProb_bad, count = self.process_WOM(
-                    i, j, self.G.nodes[j]['state'], jointProb_good, jointProb_bad, count)
+            if self.G.nodes[i]["WOM_treate_table"][j] != 1:  # 已经处理过的PWOM不再重复进行处理
+                jointProb_good, jointProb_bad, count = self.process_WOM(i, j, self.G.nodes[j]['state'], jointProb_good, jointProb_bad, count)
 
     def process_WOM(self, i, j, state, jointProb_good, jointProb_bad, count):
-        '''i -- agent i
-           j -- agent i's neighbor j
-           state -- neighbor j's WOM based on j's state; state: +1 --> PWOM; -1, -2 --> NWOM 
-           count -- 该时间步内agent i已经处理的WOM数'''
-        belief_innovGood = self.G.nodes[i]["belief_innovGood"]  # 对创新为好的创新的信念
-        p = self.G.nodes[i]["prob_p"]  # 接收两种信息的基础概率
-        # 如果agent认为现实是这应该是一个好(坏)的创新，收到PWOM和NWOM的概率
-        prob_innov_good, prob_innov_bad =  [p, 1-p], [1-p, p]
+        '''
+        i -- agent i
+        j -- agent i's neighbor j
+        state -- neighbor j's WOM based on j's state; state: +1 --> PWOM; -1, -2 --> NWOM 
+        count -- 该时间步内agent i已经处理的WOM数
+        '''
+        belief_innovGood = self.G.nodes[i]["belief_innovGood"]  # agent i对创新为好的创新的先验信念
+        #TODO 如果agent认为现实是这应该是一个好(坏)的创新，应该接收到PWOM和NWOM的概率。
+        prob_innov_good, prob_innov_bad =  [self.G.nodes[i]["prob_p"], 1-self.G.nodes[i]["prob_p"]], [1-self.G.nodes[i]["prob_p"], self.G.nodes[i]["prob_p"]]
 
-        prob_PWOM = belief_innovGood * prob_innov_good[0] + (1-belief_innovGood)*prob_innov_bad[0]  # 收到PWOM的全概率
-        prob_NWOM = belief_innovGood * prob_innov_good[1] + (1-belief_innovGood)*prob_innov_bad[1]  # 收到NWOM的全概率
+        prob_PWOM = belief_innovGood * prob_innov_good[0] + (1-belief_innovGood)*prob_innov_bad[0]  # 下一条WOM为PWOM的全概率
+        prob_NWOM = belief_innovGood * prob_innov_good[1] + (1-belief_innovGood)*prob_innov_bad[1]  # 下一条WOM为NWOM的全概率
 
         # utility(adopt|innovation is good) = utility(reject|innovation is bad) = 1
         u_ado_innovIsGood = 1
         u_rej_innovIsBad = 1
 
+        # 根据邻居的状态选择不同的计算方法
         if state > 0:
-            utility_process = u_ado_innovIsGood*belief_innovGood*prob_innov_good[0]*jointProb_good/(belief_innovGood*prob_innov_good[0]*jointProb_good + (1-belief_innovGood)*prob_innov_bad[0]*jointProb_bad)
-            utility_ignore = prob_PWOM*u_ado_innovIsGood*(
-                belief_innovGood*prob_innov_good[0]*prob_innov_good[0]*jointProb_good/(belief_innovGood*prob_innov_good[0]*prob_innov_good[0]*jointProb_good + (1-belief_innovGood)*prob_innov_bad[0]*prob_innov_bad[0]*jointProb_bad))\
-                + prob_NWOM*u_rej_innovIsBad*(
-                (1-belief_innovGood)*prob_innov_bad[0]*prob_innov_bad[1]*jointProb_bad/(belief_innovGood*prob_innov_good[0]*prob_innov_good[1]*jointProb_good + (1-belief_innovGood)*prob_innov_bad[0]*prob_innov_bad[1]*jointProb_bad))
+            # 在给定WOM序列下，对创新为好的创新的后验信念
+            updated_belief_innovGood = belief_innovGood*prob_innov_good[0]*jointProb_good/(belief_innovGood*prob_innov_good[0]*jointProb_good + (1-belief_innovGood)*prob_innov_bad[0]*jointProb_bad)
+            # 如果处理，则根据当前WOM的状态计算效用
+            utility_process = u_ado_innovIsGood*updated_belief_innovGood
+            # 如果忽略当前WOM，则结合下一条WOM的可能状态计算期望效用
+            utility_ignore = prob_PWOM*u_ado_innovIsGood*(belief_innovGood*prob_innov_good[0]*prob_innov_good[0]*jointProb_good/(belief_innovGood*prob_innov_good[0]*prob_innov_good[0]*jointProb_good + (1-belief_innovGood)*prob_innov_bad[0]*prob_innov_bad[0]*jointProb_bad)) + \
+                prob_NWOM*u_rej_innovIsBad*((1-belief_innovGood)*prob_innov_bad[0]*prob_innov_bad[1]*jointProb_bad/(belief_innovGood*prob_innov_good[0]*prob_innov_good[1]*jointProb_good + (1-belief_innovGood)*prob_innov_bad[0]*prob_innov_bad[1]*jointProb_bad))
 
             jointProb_good *= prob_innov_good[0]  # 更新创新为好创新下的联合概率分布，接收到的为PWOM，乘上p
             jointProb_bad *= prob_innov_bad[0]  # 更新创新为坏创新下的联合概率分布，接收到的为PWOM，乘上1-p
             if utility_process > utility_ignore:
-                self.G.nodes[i]["nei_WOM_record"][j] = 1
+                self.G.nodes[i]["WOM_treate_table"][j] = 1
                 count += 1
 
+        # 当前邻近的state=-1或-2，即处于未决定状态和拒绝状态的邻近都影响i的信念？
         if state < 0:
             utility_process = (1-belief_innovGood)*prob_innov_bad[1]*jointProb_bad/(belief_innovGood*prob_innov_good[1]*jointProb_good + (1-belief_innovGood)*prob_innov_bad[1]*jointProb_bad)
             utility_ignore = prob_PWOM*u_ado_innovIsGood*(
@@ -253,7 +256,7 @@ class AgentDiffusionModel:
             jointProb_good *= prob_innov_good[1]  # 更新创新为好创新下的联合概率分布，接收到的为NWOM，乘上1-p
             jointProb_bad *= prob_innov_bad[1]  # 更新创新为坏创新下的联合概率分布，接收到的为NWOM，乘上p
             if utility_process > utility_ignore:
-                self.G.nodes[i]["nei_WOM_record"][j] = 1
+                self.G.nodes[i]["WOM_treate_table"][j] = 1
                 count += 1
 
         return jointProb_good, jointProb_bad, count
@@ -267,12 +270,11 @@ class AgentDiffusionModel:
         self.choose_WOM(i)
         # a value generated from the uniform distribution.
         pos_dose = [(1 - self.G.nodes[j]['q']) for j in self.G.nodes[i]['predecessor']
-                    if self.G.nodes[j]['state'] == 1 and self.G.nodes[i]["nei_WOM_record"][j] == 1]
+                    if self.G.nodes[j]['state'] == 1 and self.G.nodes[i]["WOM_treate_table"][j] == 1]
         neg_dose = [(1 - self.omega*self.G.nodes[j]['q']) for j in self.G.nodes[i]['predecessor']
-                    if self.G.nodes[j]['state'] in (-1, -2) and self.G.nodes[i]["nei_WOM_record"][j] == 1 and self.G.nodes[j]['neg_sep'] <= 2]
+                    if self.G.nodes[j]['state'] in (-1, -2) and self.G.nodes[i]["WOM_treate_table"][j] == 1 and self.G.nodes[j]['neg_sep'] <= 2]
         if len(pos_dose) != 0:  # if i have predecessors
-            pi_pos = 1 - (1-self.G.nodes[i]['delta']
-                          ) * np.cumprod(pos_dose)[-1]
+            pi_pos = 1 - (1-self.G.nodes[i]['delta']) * np.cumprod(pos_dose)[-1]
         else:
             pi_pos = self.G.nodes[i]['delta']
 
@@ -288,21 +290,19 @@ class AgentDiffusionModel:
         # self.belief = p_adopt
         self.G.nodes[i]["belief_innovGood"] = p_adopt   # 采纳概率 等价于 相信创新为好创新的概率
 
+        rand_value = np.random.rand()
         if self.G.nodes[i]['state'] == 0:
-            if np.random.random() < p_adopt:
-                if self.G.nodes[i]['isDisappointed']:
+            if rand_value < p_adopt:  # 做决定
+                if self.G.nodes[i]['isDisappointed']:  # 拒绝
                     self.G.nodes[i]['next_state'] = -1
-                    self.G.nodes[i]['neg_sep'] = 1
                     return -1
-                else:
+                else:  # 接收
                     self.G.nodes[i]['next_state'] = 1
                     return 1
-            elif p_adopt <= np.random.random() < p_adopt+p_reject:
+            elif p_adopt <= rand_value < p_adopt+p_reject:  # 放弃决定
                 self.G.nodes[i]['next_state'] = -2
-                self.G.nodes[i]['neg_sep'] = max([self.G.nodes[j]['neg_sep']
-                                                  for j in self.G.nodes[i]['predecessor'] if self.G.nodes[j]['state'] in (-1, -2)]) + 1  # 邻居的最大n_wom_seg
                 return -2
-            else:
+            else:  # 不改变状态
                 return 0
 
     def get_next_states(self):
