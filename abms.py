@@ -7,7 +7,6 @@ import networkx as nx
 import numpy as np
 import matplotlib.pyplot as plt
 from copy import deepcopy
-from scipy import optimize
 
 
 def generate_normal_value(mu, sigma, m, n):
@@ -210,6 +209,9 @@ class AgentDiffusionModel:
                 break
             if self.G.nodes[i]["WOM_treate_table"][j] != 1:  # 已经处理过的PWOM不再重复进行处理
                 jointProb_good, jointProb_bad, count = self.process_WOM(i, j, self.G.nodes[j]['state'], jointProb_good, jointProb_bad, count)
+        
+        
+        self.G.nodes[i]["belief_innovGood"] = []
 
     def process_WOM(self, i, j, state, jointProb_good, jointProb_bad, count):
         '''
@@ -288,15 +290,15 @@ class AgentDiffusionModel:
         p_reject = (1 - pi_pos)*pi_neg + (1 - alpha) * pi_pos * pi_neg
         # p_undecided = (1 - pi_pos)*(1 - pi_neg)
         # self.belief = p_adopt
-        self.G.nodes[i]["belief_innovGood"] = p_adopt   # 采纳概率 等价于 相信创新为好创新的概率
+        # self.G.nodes[i]["belief_innovGood"] = p_adopt   # 采纳概率 等价于 相信创新为好创新的概率
 
         rand_value = np.random.rand()
         if self.G.nodes[i]['state'] == 0:
-            if rand_value < p_adopt:  # 做决定
-                if self.G.nodes[i]['isDisappointed']:  # 拒绝
-                    self.G.nodes[i]['next_state'] = -1
+            if rand_value < p_adopt:  # 决定采纳
+                if self.G.nodes[i]['isDisappointed']:  # 采纳之后不满意
+                    self.G.nodes[i]['next_state'] = -1 
                     return -1
-                else:  # 接收
+                else:  # 采纳之后满意
                     self.G.nodes[i]['next_state'] = 1
                     return 1
             elif p_adopt <= rand_value < p_adopt+p_reject:  # 放弃决定
