@@ -7,6 +7,9 @@ import networkx as nx
 import numpy as np
 import matplotlib.pyplot as plt
 from copy import deepcopy
+import multiprocessing
+
+NUM_CORNS = multiprocessing.cpu_count()  # cpu核数
 
 
 def generate_normal_value(mu, sigma, m, n):
@@ -83,6 +86,8 @@ class AgentDiffusionModel:
         delta,   # the effect of Advertisement
         mean_q,
         perc_disp_ratio,
+        lower_d=-2,
+        upper_d=5,
         G=nx.random_graphs.barabasi_albert_graph(1000, 3),
         seed_type="social hub",
         omega=2,  # the relative effect of negative WOM over positive WOM to 2.
@@ -108,8 +113,8 @@ class AgentDiffusionModel:
         q_array = generate_lognormal_values(
             t_mean=self.mean_q, size=self.G.number_of_nodes())
         # np.random.lognormal()
-        # utility(adopt|innovation is good) = utility(reject|innovation is bad) = 1
-        self.innovGood_degree_array = np.random.randint(-5, 5, size=self.G.number_of_nodes())
+        # 对创新为好创新的置信度，为正时表示相信其为好创新；为负时表示其为不好的创新
+        self.innovGood_degree_array = np.random.randint(lower_d, upper_d, size=self.G.number_of_nodes())
         self.u_adopt = u_adopt
         self.u_reject = u_reject
         # 以下节点属性在仿真过程中保持不变
@@ -208,7 +213,7 @@ class AgentDiffusionModel:
             if utility_process > utility_ignore:
                 self.G.nodes[i]["WOM_treate_table"][j] = 1
                 # 处理了负面信息，所以好创新对应的置信度-1
-                self.G.nodes[i]["innovGood_degree"] = self.G.nodes[i]["p_innovGood"] - 1
+                self.G.nodes[i]["innovGood_degree"] = self.G.nodes[i]["innovGood_degree"] - 1
                 count += 1
 
         return p_seq_innovGood, p_seq_innovBad, count
@@ -219,7 +224,7 @@ class AgentDiffusionModel:
         '''
         p_seq_innovGood = 1  # 如果agent认为这是一个好的创新，判断是否处理m+1条WOM之前，前m条WOM出现的累计概率
         p_seq_innovBad = 1  # 如果agent认为这是一个坏的创新，判断是否处理m+1条WOM之前，前m条WOM出现的累计概率
-        random.shuffle(self.G.nodes[i]['predecessor'])  # 打乱邻居信息的顺序
+        np.random.shuffle(self.G.nodes[i]['predecessor'])  # 打乱邻居信息的顺序
         count = 0
         for j in self.G.nodes[i]['predecessor']:
             if self.G.nodes[i]["WOM_treate_table"][j] != 1:  # 已经处理过的PWOM不再重复进行处理
@@ -240,6 +245,7 @@ class AgentDiffusionModel:
                     if self.G.nodes[j]['state'] == 1 and self.G.nodes[i]["WOM_treate_table"][j] == 1]
         neg_dose = [(1 - self.omega*self.G.nodes[j]['q']) for j in self.G.nodes[i]['predecessor']
                     if self.G.nodes[j]['state'] in (-1, -2) and self.G.nodes[i]["WOM_treate_table"][j] == 1 and self.G.nodes[j]['neg_sep'] <= 2]
+
         if len(pos_dose) != 0:  # if i have predecessors
             pi_pos = 1 - (1-self.G.nodes[i]['delta']) * np.cumprod(pos_dose)[-1]
         else:
@@ -255,6 +261,7 @@ class AgentDiffusionModel:
         p_reject = (1 - pi_pos)*pi_neg + (1 - alpha) * pi_pos * pi_neg
         # p_undecided = (1 - pi_pos)*(1 - pi_neg)
 
+        #TODO 此处更新规则有问题。失望人数很少。
         rand_value = np.random.rand()
         if self.G.nodes[i]['state'] == 0:
             if rand_value < p_adopt:  # 决定采纳
@@ -293,7 +300,7 @@ class AgentDiffusionModel:
             if self.G.nodes[i]['state'] == 0:
                 self.G.nodes[i]['state'] = self.G.nodes[i]['next_state']
 
-    def diffuse(self, max_steps=30):
+    def diffuse(self, max_steps=50):
         '''
         Goal: a single diffusion process.
         Output: the lists of revenue, #adopters, #disappointers, #rejecters across the period.
@@ -327,7 +334,7 @@ class AgentDiffusionModel:
 
         return num_adopter_list, num_disappointer_list, num_rejecter_list
 
-    def multi_diffuse(self, max_steps=30, num_simu=10):
+    def multi_diffuse(self, max_steps=50, num_simu=10):
         '''
         Goal: perform #num_simu simulations.
         Output: the lists for each list of #adopters, #disappointers, #rejecters across the period.
@@ -348,6 +355,34 @@ class AgentDiffusionModel:
         return {'num_adopter': num_adopter_cont,
                 'num_disappointer': num_disappointer_cont,
                 'num_rejecter': num_rejecter_cont}
+    
+    def multi_diffuse_cores(self, max_steps=50, num_simu=10):
+        num_adopter_cont, num_disappointer_cont, num_rejecter_cont = [], [], []
+        if NUM_CORNS >= 2:
+            pool = multiprocessing.Pool(processes=NUM_CORNS - 1)
+            result = []
+            for _ in range(num_simu):
+                a = pool.apply_async(self.diffuse, kwds={"max_steps": max_steps})
+                result.append(a)
+
+            pool.close()
+            pool.join()
+            for res in result:
+                data = res.get()
+                num_adopter_cont.append(data[0])
+                num_disappointer_cont.append(data[1])
+                num_rejecter_cont.append(data[2])
+        else:
+            for _ in range(num_simu):
+                data = self.diffuse(max_steps)
+                num_adopter_cont.append(data[0])
+                num_disappointer_cont.append(data[1])
+                num_rejecter_cont.append(data[2])
+        
+        return {'num_adopter': num_adopter_cont,
+                'num_disappointer': num_disappointer_cont,
+                'num_rejecter': num_rejecter_cont}
+
 
 def convert_result(res_dict, num_simu, max_num_steps):
     '''
@@ -387,33 +422,42 @@ def main(delta, mean_q, perc_disp_ratio):
 
 
 if __name__ == "__main__":
+    __spec__ = "ModuleSpec(name='builtins', loader=<class '_frozen_importlib.BuiltinImporter'>)"
     delta = 0.005
     mean_q = 0.1
-    perc_disp_ratio = 0.01
+    perc_disp_ratio = 0.05
     u_adopt = 1
     u_reject = 1
-    G = nx.barabasi_albert_graph(2000, 3)
+    lower_d = -2
+    upper_d = 5
+    seed_type = "randomly designated"
+    G = nx.barabasi_albert_graph(1000, 3)
     abms = AgentDiffusionModel(delta=delta,
                                mean_q=mean_q,
                                perc_disp_ratio=perc_disp_ratio,
+                               lower_d=lower_d,
+                               upper_d=upper_d,
+                               seed_type=seed_type,
                                G=G,
                                u_adopt=u_adopt,
                                u_reject=u_reject)
 
-    max_steps, num_simu = 50, 10
+    max_steps, num_simu = 60, 10
+    t1 = time.perf_counter()
     res_dict = abms.multi_diffuse(max_steps=max_steps, num_simu=num_simu)
     res_dict = convert_result(res_dict, max_num_steps=max_steps, num_simu=num_simu)
     
     mean_num_adopter = np.mean(res_dict["num_adopter"], axis=0)
     mean_num_disappointer = np.mean(res_dict["num_disappointer"], axis=0)
     mean_num_rejecter = np.mean(res_dict["num_rejecter"], axis=0)
+    print(f"总共耗时: {time.perf_counter() - t1: .2f}s")
     print(f"总采纳人数: {np.sum(mean_num_adopter):.1f}, 总失望人数: {np.sum(mean_num_disappointer):.1f}, 总拒绝人数: {np.sum(mean_num_rejecter): .1f}")
 
-    fig = plt.figure(figsize=(12, 8))
+    fig = plt.figure(figsize=(15, 8))
     ax = fig.add_subplot(1, 1, 1)
-    ax.plot(np.arange(50), mean_num_adopter, 'g-', lw=1.5, label='Adopter')
-    ax.plot(np.arange(50), mean_num_disappointer, 'r-', lw=1, label='Disappointer')
-    ax.plot(np.arange(50), mean_num_rejecter, 'b-', lw=1, label='rejecter')
+    ax.plot(np.arange(max_steps), mean_num_adopter, 'go-', lw=1.5, label='Adopter')
+    ax.plot(np.arange(max_steps), mean_num_disappointer, 'r-', lw=0.5, alpha=0.5, label='Disappointer')
+    ax.plot(np.arange(max_steps), mean_num_rejecter, 'b-', lw=0.5, alpha=0.5, label='rejecter')
     ax.legend(loc='best')
     plt.show()
 
