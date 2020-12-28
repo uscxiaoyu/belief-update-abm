@@ -74,43 +74,6 @@ def adjust_ratio(x, r_list, real_std_r):
     return np.std(small_r_list + large_r_list) - real_std_r
 
 
-def convert_result(res_dict, num_simu, max_num_steps):
-    '''
-    Goal: transfer list to np.array
-    '''
-    num_adopter = res_dict['num_adopter']
-    num_disappointer = res_dict['num_disappointer']
-    num_rejecter = res_dict['num_rejecter']
-
-    adopter_array = np.zeros((num_simu, max_num_steps), dtype=float)
-    disappointer_array = np.zeros((num_simu, max_num_steps), dtype=float)
-    rejecter_array = np.zeros((num_simu, max_num_steps), dtype=float)
-
-    # 转换为np.array对象
-    for i in range(num_simu):
-        for j in range(max_num_steps):
-            try:
-                adopter_array[i][j] = num_adopter[i][j]
-                disappointer_array[i][j] = num_disappointer[i][j]
-                rejecter_array[i][j] = num_rejecter[i][j]
-            except IndexError:
-                break
-
-    return {'num_adopter': adopter_array,
-            'num_disappointer': disappointer_array,
-            'num_rejecter': rejecter_array}
-
-
-def main(delta, mean_q, perc_disp_ratio):
-    abms = AgentDiffusionModel(delta=delta,
-                               mean_q=mean_q,
-                               perc_disp_ratio=perc_disp_ratio)
-    num_simu = 10
-    res_dict = abms.multi_diffuse(num_simu=num_simu)
-    res_dict = convert_result(res_dict, num_simu=num_simu, max_num_steps=30)
-    print(res_dict)
-
-
 class AgentDiffusionModel:
     def __init__(
         self,
@@ -133,6 +96,7 @@ class AgentDiffusionModel:
             self.G = deepcopy(G)
         else:
             self.G = deepcopy(G.to_directed())
+
         self.delta = delta  # 广告影响，虽然paper描述为mean，但没看到具体分布
         self.mean_q = mean_q
         self.omega = omega  # negative factor
@@ -142,13 +106,13 @@ class AgentDiffusionModel:
             t_mean=self.mean_q, size=self.G.number_of_nodes())
         # np.random.lognormal()
         # utility(adopt|innovation is good) = utility(reject|innovation is bad) = 1
+        self.p_innovGood_array = np.random.rand(self.G.number_of_nodes())
         self.u_adopt = u_adopt
         self.u_reject = u_reject
+        # 以下节点属性在仿真过程中保持不变
         for i, x in enumerate(self.G.nodes()):
             self.G.nodes[x]["delta"] = self.delta
             self.G.nodes[x]["q"] = q_array[i]
-            # agent认为创新是好创新的先验概率
-            self.G.nodes[x]["p_innovGood"] = np.random.random()
             # 在创新实际上为好的创新前提下，agent认为其下一个接收到是正面口碑的概率
             self.G.nodes[x]["p_pos_innovGood"] = 0.5*np.random.random() + 0.5
             # 在创新实际上为坏的创新前提下，agent认为其下一个接收到是负面口碑的概率
@@ -157,14 +121,11 @@ class AgentDiffusionModel:
             self.G.nodes[x]["cognitive_limit"] = np.random.randint(1, 5)
             self.G.nodes[x]["predecessor"] = list(self.G.predecessors(x))
             self.G.nodes[x]["successor"] = list(self.G.successors(x))
-            # A dict of whether WOM of the Agent's neighbors is process(1) or ignore(0){neighbor j : 0 or 1}
-            self.G.nodes[x]["WOM_treate_table"] = {i: 0 for i in self.G.nodes[x]["predecessor"]}
             # agent使用创新后是否为失望
             self.G.nodes[x]['isDisappointed'] = False
 
         self.seed_type = seed_type
-        self.num_seeds = int(
-            perc_disp_ratio * self.G.number_of_nodes())  # 不满意节点数量
+        self.num_seeds = int(perc_disp_ratio * self.G.number_of_nodes())  # 不满意节点数量
         self.seeds = self.choose_seeds()
         for i in self.seeds:
             self.G.nodes[i]['isDisappointed'] = True
@@ -173,9 +134,14 @@ class AgentDiffusionModel:
         '''
         Goal: initialize the state of agents.
         '''
-        for i in self.G.nodes():
-            self.G.nodes[i]["state"] = 0  # 当前时间步所处的状态
-            self.G.nodes[i]['next_state'] = 0  # 下一个时间步的状态
+        # 以下节点属性在仿真过程中动态变化
+        for i, x in enumerate(self.G.nodes()):
+            self.G.nodes[x]["state"] = 0  # 当前时间步所处的状态
+            self.G.nodes[x]['next_state'] = 0  # 下一个时间步的状态
+            # agent认为创新是好创新的先验概率
+            self.G.nodes[x]["p_innovGood"] = self.p_innovGood_array[i]
+            # A dict of whether WOM of the Agent's neighbors is process(1) or ignore(0){neighbor j : 0 or 1}
+            self.G.nodes[x]["WOM_treate_table"] = {j: 0 for j in self.G.nodes[x]["predecessor"]}
 
     def choose_seeds(self):
         '''
@@ -193,22 +159,6 @@ class AgentDiffusionModel:
         else:  # no seed, base case
             return []
 
-    def choose_WOM(self, i):
-        '''
-        agent从邻居发送的信息中选择信息。
-        疑问：每个周期，即使没有采纳创新的邻居也会发布创新相关信息吗？邻居在每个周期发布一样的信息？
-        '''
-        p_seq_innovGood = 1  # 如果agent认为这是一个好的创新，判断是否处理m+1条WOM之前，前m条WOM出现的累计概率
-        p_seq_innovBad = 1  # 如果agent认为这是一个坏的创新，判断是否处理m+1条WOM之前，前m条WOM出现的累计概率
-        random.shuffle(self.G.nodes[i]['predecessor'])
-        count = 0
-        for j in self.G.nodes[i]['predecessor']:
-            if count >= self.G.nodes[i]["cognitive_limit"]:
-                break
-            if self.G.nodes[i]["WOM_treate_table"][j] != 1:  # 已经处理过的PWOM不再重复进行处理
-                p_seq_innovGood, p_seq_innovBad, count = self.process_WOM(i, j, self.G.nodes[j]['state'], p_seq_innovGood, p_seq_innovBad, count)
-        #TODO self.G.nodes[i]["p_innovGood"] = 
-
     def process_WOM(self, i, j, state, p_seq_innovGood, p_seq_innovBad, count):
         '''
         i -- agent i
@@ -225,7 +175,7 @@ class AgentDiffusionModel:
         prob_PWOM = p_innovGood*p_pos_innovGood + p_innovBad*p_neg_innovBad  # 下一条WOM为PWOM的全概率
         prob_NWOM = p_innovBad*p_neg_innovBad + p_innovGood*p_neg_innovGood  # 下一条WOM为NWOM的全概率
 
-        # 根据邻居的状态选择不同的计算方法
+        # 根据邻居的状态(对应正面或负面口碑)选择不同的计算方法
         if state > 0:
             # 如果处理，则根据当前WOM的状态计算效用
             utility_process = self.u_adopt*p_innovGood*p_pos_innovGood*p_seq_innovGood/(p_innovGood*p_pos_innovGood*p_seq_innovGood + p_innovBad*p_neg_innovBad*p_seq_innovBad)
@@ -239,7 +189,7 @@ class AgentDiffusionModel:
                 self.G.nodes[i]["WOM_treate_table"][j] = 1
                 count += 1
 
-        # 当前邻近的state=-1或-2，即处于未决定状态和拒绝状态的邻近都影响i的信念？
+        # 当前邻近的state=-1或-2，即处于未决定状态和拒绝状态的邻近都影响i的信念
         if state < 0:
             utility_process = self.u_reject*p_innovBad*p_pos_innovBad*p_seq_innovBad/(p_innovGood*p_neg_innovGood*p_seq_innovGood + p_innovBad*p_pos_innovBad*p_seq_innovBad)
             utility_ignore = prob_PWOM*self.u_adopt*(
@@ -254,6 +204,23 @@ class AgentDiffusionModel:
                 count += 1
 
         return p_seq_innovGood, p_seq_innovBad, count
+    
+    def choose_WOM(self, i):
+        '''
+        agent从邻居发送的信息中选择信息。
+        '''
+        p_seq_innovGood = 1  # 如果agent认为这是一个好的创新，判断是否处理m+1条WOM之前，前m条WOM出现的累计概率
+        p_seq_innovBad = 1  # 如果agent认为这是一个坏的创新，判断是否处理m+1条WOM之前，前m条WOM出现的累计概率
+        random.shuffle(self.G.nodes[i]['predecessor'])  # 打乱邻居信息的顺序
+        count = 0
+        for j in self.G.nodes[i]["WOM_treate_table"]:
+            if self.G.nodes[i]["WOM_treate_table"][j] != 1:  # 已经处理过的PWOM不再重复进行处理
+                p_seq_innovGood, p_seq_innovBad, count = self.process_WOM(i, j, self.G.nodes[j]['state'], p_seq_innovGood, p_seq_innovBad, count)
+            
+            if count >= self.G.nodes[i]["cognitive_limit"]:
+                break
+        # 更新下一轮的对创新是好创新的信念
+        self.G.nodes[i]["p_innovGood"] = self.G.nodes[i]["p_innovGood"]
 
     def set_agent_state(self, i):
         '''
@@ -281,20 +248,21 @@ class AgentDiffusionModel:
         p_adopt = (1 - pi_neg)*pi_pos + alpha * pi_pos * pi_neg
         p_reject = (1 - pi_pos)*pi_neg + (1 - alpha) * pi_pos * pi_neg
         # p_undecided = (1 - pi_pos)*(1 - pi_neg)
-        # self.belief = p_adopt
-        # self.G.nodes[i]["p_innovGood"] = p_adopt   # 采纳概率 等价于 相信创新为好创新的概率
 
         rand_value = np.random.rand()
         if self.G.nodes[i]['state'] == 0:
             if rand_value < p_adopt:  # 决定采纳
                 if self.G.nodes[i]['isDisappointed']:  # 采纳之后不满意
                     self.G.nodes[i]['next_state'] = -1
+                    self.G.nodes[i]['neg_sep'] = 1  # 负面口碑传播的初始距离
                     return -1
                 else:  # 采纳之后满意
                     self.G.nodes[i]['next_state'] = 1
                     return 1
             elif p_adopt <= rand_value < p_adopt+p_reject:  # 放弃决定
                 self.G.nodes[i]['next_state'] = -2
+                # 邻近的最大n_wom_seg
+                self.G.nodes[i]['neg_sep'] =  max([self.G.nodes[j]["neg_sep"] for j in self.G.nodes[i]["predecessor"] if self.G.nodes[j]["state"] in (-1, -2)]) + 1
                 return -2
             else:  # 不改变状态
                 return 0
@@ -375,6 +343,71 @@ class AgentDiffusionModel:
                 'num_disappointer': num_disappointer_cont,
                 'num_rejecter': num_rejecter_cont}
 
+def convert_result(res_dict, num_simu, max_num_steps):
+    '''
+    Goal: transfer list to np.array
+    '''
+    num_adopter = res_dict['num_adopter']
+    num_disappointer = res_dict['num_disappointer']
+    num_rejecter = res_dict['num_rejecter']
+
+    adopter_array = np.zeros((num_simu, max_num_steps), dtype=float)
+    disappointer_array = np.zeros((num_simu, max_num_steps), dtype=float)
+    rejecter_array = np.zeros((num_simu, max_num_steps), dtype=float)
+
+    # 转换为np.array对象
+    for i in range(num_simu):
+        for j in range(max_num_steps):
+            try:
+                adopter_array[i][j] = num_adopter[i][j]
+                disappointer_array[i][j] = num_disappointer[i][j]
+                rejecter_array[i][j] = num_rejecter[i][j]
+            except IndexError:
+                break
+
+    return {'num_adopter': adopter_array,
+            'num_disappointer': disappointer_array,
+            'num_rejecter': rejecter_array}
+
+
+def main(delta, mean_q, perc_disp_ratio):
+    abms = AgentDiffusionModel(delta=delta,
+                               mean_q=mean_q,
+                               perc_disp_ratio=perc_disp_ratio)
+    num_simu = 10
+    res_dict = abms.multi_diffuse(num_simu=num_simu)
+    res_dict = convert_result(res_dict, num_simu=num_simu, max_num_steps=30)
+    print(res_dict)
+
 
 if __name__ == "__main__":
-    main(0.011, 0.05, 0.05)
+    delta = 0.005
+    mean_q = 0.1
+    perc_disp_ratio = 0.01
+    u_adopt = 1
+    u_reject = 1
+    G = nx.barabasi_albert_graph(2000, 3)
+    abms = AgentDiffusionModel(delta=delta,
+                               mean_q=mean_q,
+                               perc_disp_ratio=perc_disp_ratio,
+                               G=G,
+                               u_adopt=u_adopt,
+                               u_reject=u_reject)
+
+    max_steps, num_simu = 50, 10
+    res_dict = abms.multi_diffuse(max_steps=max_steps, num_simu=num_simu)
+    res_dict = convert_result(res_dict, max_num_steps=max_steps, num_simu=num_simu)
+    
+    mean_num_adopter = np.mean(res_dict["num_adopter"], axis=0)
+    mean_num_disappointer = np.mean(res_dict["num_disappointer"], axis=0)
+    mean_num_rejecter = np.mean(res_dict["num_rejecter"], axis=0)
+    print(f"总采纳人数: {np.sum(mean_num_adopter):.1f}, 总失望人数: {np.sum(mean_num_disappointer):.1f}, 总拒绝人数: {np.sum(mean_num_rejecter): .1f}")
+
+    fig = plt.figure(figsize=(12, 8))
+    ax = fig.add_subplot(1, 1, 1)
+    ax.plot(np.arange(50), mean_num_adopter, 'g-', lw=1.5, label='Adopter')
+    ax.plot(np.arange(50), mean_num_disappointer, 'r-', lw=1, label='Disappointer')
+    ax.plot(np.arange(50), mean_num_rejecter, 'b-', lw=1, label='rejecter')
+    ax.legend(loc='best')
+    plt.show()
+
