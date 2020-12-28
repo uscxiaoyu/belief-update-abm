@@ -74,6 +74,9 @@ def adjust_ratio(x, r_list, real_std_r):
     return np.std(small_r_list + large_r_list) - real_std_r
 
 
+def logit(x, alpha=0.5):
+    return 1 / (1+np.exp(-x*alpha))
+
 class AgentDiffusionModel:
     def __init__(
         self,
@@ -106,7 +109,7 @@ class AgentDiffusionModel:
             t_mean=self.mean_q, size=self.G.number_of_nodes())
         # np.random.lognormal()
         # utility(adopt|innovation is good) = utility(reject|innovation is bad) = 1
-        self.p_innovGood_array = np.random.rand(self.G.number_of_nodes())
+        self.innovGood_degree_array = np.random.randint(-5, 5, size=self.G.number_of_nodes())
         self.u_adopt = u_adopt
         self.u_reject = u_reject
         # 以下节点属性在仿真过程中保持不变
@@ -138,8 +141,8 @@ class AgentDiffusionModel:
         for i, x in enumerate(self.G.nodes()):
             self.G.nodes[x]["state"] = 0  # 当前时间步所处的状态
             self.G.nodes[x]['next_state'] = 0  # 下一个时间步的状态
-            # agent认为创新是好创新的先验概率
-            self.G.nodes[x]["p_innovGood"] = self.p_innovGood_array[i]
+            # agent认为创新是好创新的先验权值
+            self.G.nodes[x]["innovGood_degree"] = self.innovGood_degree_array[i]
             # A dict of whether WOM of the Agent's neighbors is process(1) or ignore(0){neighbor j : 0 or 1}
             self.G.nodes[x]["WOM_treate_table"] = {j: 0 for j in self.G.nodes[x]["predecessor"]}
 
@@ -167,7 +170,8 @@ class AgentDiffusionModel:
         count -- 该时间步内agent i已经处理的WOM数
         '''
         # agent i对创新为好的创新的初始信念
-        p_innovGood, p_innovBad = self.G.nodes[i]["p_innovGood"], 1 - self.G.nodes[i]["p_innovGood"]
+        p_innovGood = logit(self.G.nodes[i]["innovGood_degree"])
+        p_innovBad = 1 - p_innovGood
         # 如果agent认为现实是这应该是一个好(坏)的创新，应该接收到PWOM(NWOM)的概率。
         p_pos_innovGood, p_neg_innovGood =  [self.G.nodes[i]["p_pos_innovGood"], 1-self.G.nodes[i]["p_pos_innovGood"]]
         p_neg_innovBad, p_pos_innovBad =  [self.G.nodes[i]["p_neg_innovBad"], 1-self.G.nodes[i]["p_neg_innovBad"]]
@@ -187,6 +191,8 @@ class AgentDiffusionModel:
             p_seq_innovBad *= p_neg_innovBad  # 更新创新为坏创新下的联合概率分布，接收到的为PWOM，乘上1-p
             if utility_process > utility_ignore:
                 self.G.nodes[i]["WOM_treate_table"][j] = 1
+                # 处理PWOM之后，所以好创新对应的置信度+1
+                self.G.nodes[i]["innovGood_degree"] = self.G.nodes[i]["innovGood_degree"] + 1
                 count += 1
 
         # 当前邻近的state=-1或-2，即处于未决定状态和拒绝状态的邻近都影响i的信念
@@ -201,10 +207,12 @@ class AgentDiffusionModel:
             p_seq_innovBad *= p_pos_innovBad  # 更新创新为坏创新下的联合概率分布，接收到的为NWOM，乘上p
             if utility_process > utility_ignore:
                 self.G.nodes[i]["WOM_treate_table"][j] = 1
+                # 处理了负面信息，所以好创新对应的置信度-1
+                self.G.nodes[i]["innovGood_degree"] = self.G.nodes[i]["p_innovGood"] - 1
                 count += 1
 
         return p_seq_innovGood, p_seq_innovBad, count
-    
+
     def choose_WOM(self, i):
         '''
         agent从邻居发送的信息中选择信息。
@@ -213,14 +221,12 @@ class AgentDiffusionModel:
         p_seq_innovBad = 1  # 如果agent认为这是一个坏的创新，判断是否处理m+1条WOM之前，前m条WOM出现的累计概率
         random.shuffle(self.G.nodes[i]['predecessor'])  # 打乱邻居信息的顺序
         count = 0
-        for j in self.G.nodes[i]["WOM_treate_table"]:
+        for j in self.G.nodes[i]['predecessor']:
             if self.G.nodes[i]["WOM_treate_table"][j] != 1:  # 已经处理过的PWOM不再重复进行处理
                 p_seq_innovGood, p_seq_innovBad, count = self.process_WOM(i, j, self.G.nodes[j]['state'], p_seq_innovGood, p_seq_innovBad, count)
-            
+
             if count >= self.G.nodes[i]["cognitive_limit"]:
                 break
-        # 更新下一轮的对创新是好创新的信念
-        self.G.nodes[i]["p_innovGood"] = self.G.nodes[i]["p_innovGood"]
 
     def set_agent_state(self, i):
         '''
