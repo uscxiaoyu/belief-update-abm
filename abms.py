@@ -2,14 +2,13 @@
 
 import time
 import datetime
-import random
 import networkx as nx
 import numpy as np
 import matplotlib.pyplot as plt
 from copy import deepcopy
 import multiprocessing
 
-NUM_CORNS = multiprocessing.cpu_count()  # cpu核数
+NUM_CORNS = multiprocessing.cpu_count()  # 运行程序的主机的cpu核数
 
 
 def generate_normal_value(mu, sigma, m, n):
@@ -42,11 +41,13 @@ def generate_lognormal_values(t_mean, size=10000, tau=0.1):
         if ratio > 1.01:
             cum_a = np.sum(large_a) * tau * r
             large_a = large_a * (1 - tau * r)
-            small_a += np.array([cum_a / len(small_a) for i in range(len(small_a))])
+            small_a += np.array([cum_a / len(small_a)
+                                 for i in range(len(small_a))])
         elif ratio < 0.99:
             cum_a = np.sum(small_a) * tau * r
             small_a = small_a * (1 - tau * r)
-            large_a += np.array([cum_a / len(large_a) for i in range(len(large_a))])
+            large_a += np.array([cum_a / len(large_a)
+                                 for i in range(len(large_a))])
         else:
             break
         a = np.concatenate((small_a, large_a), axis=None)
@@ -109,10 +110,12 @@ class AgentDiffusionModel:
         self.omega = omega  # negative factor
         # negative WOM only travels 2 degrees of separation
         self.travel_degree = travel_degree
-        q_array = generate_lognormal_values(t_mean=self.mean_q, size=self.G.number_of_nodes())
+        q_array = generate_lognormal_values(
+            t_mean=self.mean_q, size=self.G.number_of_nodes())
         # np.random.lognormal()
         # 对创新为好创新的置信度，为正时表示相信其为好创新；为负时表示其为不好的创新
-        self.innovGood_degree_array = np.random.randint(lower_d, upper_d, size=self.G.number_of_nodes())
+        self.innovGood_degree_array = np.random.randint(
+            lower_d, upper_d, size=self.G.number_of_nodes())
         self.u_adopt = u_adopt
         self.u_reject = u_reject
         # 以下节点属性在仿真过程中保持不变
@@ -131,7 +134,8 @@ class AgentDiffusionModel:
             self.G.nodes[x]["isDisappointed"] = False
 
         self.seed_type = seed_type
-        self.num_seeds = int(perc_disp_ratio * self.G.number_of_nodes())  # 不满意节点数量
+        self.num_seeds = int(
+            perc_disp_ratio * self.G.number_of_nodes())  # 不满意节点数量
         self.seeds = self.choose_seeds()
         for i in self.seeds:
             self.G.nodes[i]["isDisappointed"] = True
@@ -147,7 +151,8 @@ class AgentDiffusionModel:
             # agent认为创新是好创新的先验权值
             self.G.nodes[x]["innovGood_degree"] = self.innovGood_degree_array[i]
             # A dict of whether WOM of the Agent's neighbors is process(1) or ignore(0){neighbor j : 0 or 1}
-            self.G.nodes[x]["WOM_treate_table"] = {j: 0 for j in self.G.nodes[x]["predecessor"]}
+            self.G.nodes[x]["WOM_treate_table"] = {
+                j: 0 for j in self.G.nodes[x]["predecessor"]}
 
     def choose_seeds(self):
         """
@@ -177,11 +182,15 @@ class AgentDiffusionModel:
         p_innovGood = logit(self.G.nodes[i]["innovGood_degree"])
         p_innovBad = 1 - p_innovGood
         # 如果agent认为现实是这应该是一个好(坏)的创新，应该接收到PWOM(NWOM)的概率。
-        p_pos_innovGood, p_neg_innovGood = [self.G.nodes[i]["p_pos_innovGood"], 1 - self.G.nodes[i]["p_pos_innovGood"]]
-        p_neg_innovBad, p_pos_innovBad = [self.G.nodes[i]["p_neg_innovBad"], 1 - self.G.nodes[i]["p_neg_innovBad"]]
+        p_pos_innovGood, p_neg_innovGood = [
+            self.G.nodes[i]["p_pos_innovGood"], 1 - self.G.nodes[i]["p_pos_innovGood"]]
+        p_neg_innovBad, p_pos_innovBad = [
+            self.G.nodes[i]["p_neg_innovBad"], 1 - self.G.nodes[i]["p_neg_innovBad"]]
 
-        prob_PWOM = p_innovGood * p_pos_innovGood + p_innovBad * p_neg_innovBad  # 下一条WOM为PWOM的全概率
-        prob_NWOM = p_innovBad * p_neg_innovBad + p_innovGood * p_neg_innovGood  # 下一条WOM为NWOM的全概率
+        prob_PWOM = p_innovGood * p_pos_innovGood + \
+            p_innovBad * p_neg_innovBad  # 下一条WOM为PWOM的全概率
+        prob_NWOM = p_innovBad * p_neg_innovBad + \
+            p_innovGood * p_neg_innovGood  # 下一条WOM为NWOM的全概率
 
         # 根据邻居的状态(对应正面或负面口碑)选择不同的计算方法
         if state > 0:
@@ -300,7 +309,8 @@ class AgentDiffusionModel:
         ]
 
         if len(pos_dose) != 0:  # if i have predecessors
-            pi_pos = 1 - (1 - self.G.nodes[i]["delta"]) * np.cumprod(pos_dose)[-1]
+            pi_pos = 1 - (1 - self.G.nodes[i]
+                          ["delta"]) * np.cumprod(pos_dose)[-1]
         else:
             pi_pos = self.G.nodes[i]["delta"]
 
@@ -406,7 +416,8 @@ class AgentDiffusionModel:
         for i in range(num_simu):
             t1 = time.perf_counter()
             print(f"第{i+1}次模拟", end="  ")
-            num_adopter_list, num_disappointer_list, num_rejecter_list = self.diffuse(max_steps=max_steps)
+            num_adopter_list, num_disappointer_list, num_rejecter_list = self.diffuse(
+                max_steps=max_steps)
             num_adopter_cont.append(num_adopter_list)
             num_disappointer_cont.append(num_disappointer_list)
             num_rejecter_cont.append(num_rejecter_list)
@@ -425,7 +436,8 @@ class AgentDiffusionModel:
             pool = multiprocessing.Pool(processes=NUM_CORNS - 1)
             result = []
             for _ in range(num_simu):
-                a = pool.apply_async(self.diffuse, kwds={"max_steps": max_steps})
+                a = pool.apply_async(self.diffuse, kwds={
+                                     "max_steps": max_steps})
                 result.append(a)
 
             pool.close()
@@ -475,7 +487,8 @@ def convert_result(res_dict, num_simu, max_num_steps):
 
 
 def main(delta, mean_q, perc_disp_ratio):
-    abms = AgentDiffusionModel(delta=delta, mean_q=mean_q, perc_disp_ratio=perc_disp_ratio)
+    abms = AgentDiffusionModel(
+        delta=delta, mean_q=mean_q, perc_disp_ratio=perc_disp_ratio)
     num_simu = 10
     res_dict = abms.multi_diffuse(num_simu=num_simu)
     res_dict = convert_result(res_dict, num_simu=num_simu, max_num_steps=30)
@@ -484,31 +497,26 @@ def main(delta, mean_q, perc_disp_ratio):
 
 if __name__ == "__main__":
     __spec__ = "ModuleSpec(name='builtins', loader=<class '_frozen_importlib.BuiltinImporter'>)"
-    delta = 0.005
-    mean_q = 0.1
-    perc_disp_ratio = 0.01
-    u_adopt = 1
-    u_reject = 1
-    lower_d = -3
-    upper_d = 5
-    seed_type = "social hub"
-    G = nx.barabasi_albert_graph(1000, 3)
-    abms = AgentDiffusionModel(
-        delta=delta,
-        mean_q=mean_q,
-        perc_disp_ratio=perc_disp_ratio,
-        lower_d=lower_d,
-        upper_d=upper_d,
-        seed_type=seed_type,
-        G=G,
-        u_adopt=u_adopt,
-        u_reject=u_reject,
-    )
+
+    params_dict = {
+        'delta': 0.005,
+        'mean_q': 0.2,
+        'perc_disp_ratio': 0.05,
+        'u_adopt': 1.5,
+        'u_reject': 1,
+        'lower_d': -3,
+        'upper_d': 5,
+        'seed_type': "social hub",
+        'G': nx.barabasi_albert_graph(1000, 3)
+    }
+
+    abms = AgentDiffusionModel(**params_dict)
 
     max_steps, num_simu = 60, 10
     t1 = time.perf_counter()
     res_dict = abms.multi_diffuse_cores(max_steps=max_steps, num_simu=num_simu)
-    res_dict = convert_result(res_dict, max_num_steps=max_steps, num_simu=num_simu)
+    res_dict = convert_result(
+        res_dict, max_num_steps=max_steps, num_simu=num_simu)
 
     mean_num_adopter = np.mean(res_dict["num_adopter"], axis=0)
     mean_num_disappointer = np.mean(res_dict["num_disappointer"], axis=0)
@@ -522,9 +530,11 @@ if __name__ == "__main__":
     ax = fig.add_subplot(1, 1, 1)
     ax.set_xlabel("Time step")
     ax.set_ylabel("Number of agents")
-    ax.plot(np.arange(max_steps), mean_num_adopter, "go-", lw=1.5, label="Adopter")
-    ax.plot(np.arange(max_steps), mean_num_disappointer, "r-", lw=0.5, alpha=0.5, label="Disappointer")
-    ax.plot(np.arange(max_steps), mean_num_rejecter, "b-", lw=0.5, alpha=0.5, label="rejecter")
+    ax.plot(np.arange(max_steps), mean_num_adopter,
+            "go-", lw=1.5, label="Adopter")
+    ax.plot(np.arange(max_steps), mean_num_disappointer,
+            "r-", lw=0.5, alpha=0.5, label="Disappointer")
+    ax.plot(np.arange(max_steps), mean_num_rejecter,
+            "b-", lw=0.5, alpha=0.5, label="rejecter")
     ax.legend(loc="best")
     plt.show()
-
